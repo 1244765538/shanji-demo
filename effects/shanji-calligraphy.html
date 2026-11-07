@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>善迹 · 苹果式光带书写</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: #070a0f; color: #e8eef4;
+    font-family: "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  }
+  .wrap {
+    min-height: 100%; display: grid; place-items: center; gap: 14px;
+    padding: 24px 16px 40px;
+  }
+  h1 { margin: 0; font-size: 1rem; font-weight: 650; opacity: .92; }
+  p { margin: 0; font-size: .82rem; opacity: .5; text-align: center; max-width: 42rem; line-height: 1.55; }
+  .stage {
+    width: min(96vw, 1040px);
+    aspect-ratio: 972 / 520;
+    border-radius: 16px; overflow: hidden; position: relative;
+    background-color: #10161c;
+    background-image:
+      linear-gradient(45deg, #182028 25%, transparent 25%),
+      linear-gradient(-45deg, #182028 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #182028 75%),
+      linear-gradient(-45deg, transparent 75%, #182028 75%);
+    background-size: 28px 28px;
+    background-position: 0 0, 0 14px, 14px -14px, -14px 0;
+    box-shadow: 0 24px 70px rgba(0,0,0,.48);
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .hint { position: absolute; left: 12px; bottom: 10px; font-size: .7rem; opacity: .4; pointer-events: none; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button {
+    appearance: none; border: 0; border-radius: 999px; padding: 8px 14px; cursor: pointer;
+    background: #1d8a72; color: #f4fffb; font-weight: 600; font-size: .85rem;
+  }
+  button.ghost { background: transparent; color: #d7dee6; border: 1px solid #3a4652; }
+  a { color: #8be0c4; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>善迹 · 连续光带书写（hello 模板）</h1>
+    <div class="stage">
+      <canvas id="c" aria-label="善迹书写动画"></canvas>
+      <div class="hint">香槟金奶油白 · 透明底 · 光尖 dash 揭示 · ~120fps</div>
+    </div>
+    <div class="actions">
+      <button type="button" id="replay">重播</button>
+      <button type="button" class="ghost" id="pause">暂停 / 继续</button>
+    </div>
+    <p>
+      静态定稿：
+      <a href="../brand/logo-preview.html">brand/logo-preview.html</a>
+      · 字轮廓来自行书手写体，光尖轨迹按苹果 hello 的贝塞尔 dash 模板
+    </p>
+  </div>
+
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <path id="mainPath" fill="none" />
+  </svg>
+
+<script type="module">
+import { VIEWBOX, MAIN_PATH, GLYPH_PATHS } from '../brand/shanji-paths.js';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+const mainEl = document.getElementById('mainPath');
+mainEl.setAttribute('d', MAIN_PATH);
+
+const glyphPaths = GLYPH_PATHS.map((d) => new Path2D(d));
+const writePath = new Path2D(MAIN_PATH);
+
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2);
+
+let mainLen = 1;
+const stamp = document.createElement('canvas');
+const stampCtx = stamp.getContext('2d');
+const ink = document.createElement('canvas');
+const inkCtx = ink.getContext('2d');
+const mask = document.createElement('canvas');
+const maskCtx = mask.getContext('2d');
+const revealed = document.createElement('canvas');
+const revealedCtx = revealed.getContext('2d');
+
+function measure() {
+  mainLen = Math.max(1, mainEl.getTotalLength());
+}
+
+function paintInkLayer(w, h, scale, ox, oy) {
+  ink.width = w;
+  ink.height = h;
+  inkCtx.setTransform(1, 0, 0, 1, 0, 0);
+  inkCtx.clearRect(0, 0, w, h);
+  inkCtx.translate(ox, oy);
+  inkCtx.scale(scale, scale);
+
+  // soft outer glow
+  inkCtx.save();
+  inkCtx.shadowColor = 'rgba(230,181,106,0.55)';
+  inkCtx.shadowBlur = 28;
+  inkCtx.fillStyle = '#F3D7B0';
+  glyphPaths.forEach((p) => inkCtx.fill(p));
+  inkCtx.restore();
+
+  // champagne core
+  const g = inkCtx.createLinearGradient(60, 80, VIEWBOX.w - 40, 420);
+  g.addColorStop(0, '#E6B56A');
+  g.addColorStop(0.45, '#FFF9F0');
+  g.addColorStop(1, '#E6B56A');
+  inkCtx.fillStyle = g;
+  glyphPaths.forEach((p) => inkCtx.fill(p));
+}
+
+function ensureStamp(scale) {
+  // 覆盖单字半宽，书写路径扫过时能整字显现
+  const r = Math.max(90, 155 * scale);
+  const size = Math.ceil(r * 2.6);
+  if (stamp.width === size && stamp._r === r) return r;
+  stamp.width = size;
+  stamp.height = size;
+  stamp._r = r;
+  stampCtx.clearRect(0, 0, size, size);
+  const c = size / 2;
+  const grad = stampCtx.createRadialGradient(c, c, 0, c, c, r);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.42, 'rgba(255,255,255,0.92)');
+  grad.addColorStop(0.78, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  stampCtx.fillStyle = grad;
+  stampCtx.beginPath();
+  stampCtx.arc(c, c, r, 0, Math.PI * 2);
+  stampCtx.fill();
+  return r;
+}
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  canvas.width = w;
+  canvas.height = h;
+  mask.width = w;
+  mask.height = h;
+  revealed.width = w;
+  revealed.height = h;
+
+  const scale = Math.min(w / VIEWBOX.w, h / VIEWBOX.h) * 0.9;
+  const ox = (w - VIEWBOX.w * scale) / 2;
+  const oy = (h - VIEWBOX.h * scale) / 2;
+  paintInkLayer(w, h, scale, ox, oy);
+  canvas._layout = { scale, ox, oy, w, h };
+}
+
+function strokeTube(drawn, scale) {
+  const { ox, oy } = canvas._layout;
+  ctx.save();
+  ctx.translate(ox, oy);
+  ctx.scale(scale, scale);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([Math.max(0, drawn), Math.max(0, mainLen)]);
+  ctx.lineDashOffset = 0;
+
+  // 底衬光带克制一点，主体让给行书字
+  ctx.strokeStyle = 'rgba(230,181,106,0.10)';
+  ctx.lineWidth = 18;
+  ctx.stroke(writePath);
+
+  ctx.strokeStyle = 'rgba(243,215,176,0.22)';
+  ctx.lineWidth = 8;
+  ctx.stroke(writePath);
+
+  ctx.strokeStyle = 'rgba(255,249,240,0.40)';
+  ctx.lineWidth = 3.2;
+  ctx.stroke(writePath);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawProgress(p) {
+  const { scale, ox, oy, w, h } = canvas._layout;
+  ctx.clearRect(0, 0, w, h);
+
+  const writeP = Math.min(1, p / 0.88);
+  const drawn = mainLen * ease(writeP);
+
+  // soft brush mask
+  maskCtx.setTransform(1, 0, 0, 1, 0, 0);
+  maskCtx.clearRect(0, 0, w, h);
+  ensureStamp(scale);
+  const steps = Math.max(36, Math.ceil(drawn / Math.max(4, 10 * scale)));
+  for (let i = 0; i <= steps; i++) {
+    const len = (drawn * i) / steps;
+    const pt = mainEl.getPointAtLength(Math.min(len, mainLen));
+    const x = ox + pt.x * scale;
+    const y = oy + pt.y * scale;
+    maskCtx.drawImage(stamp, x - stamp.width / 2, y - stamp.height / 2);
+  }
+  if (p > 0.9) {
+    const fade = Math.min(1, (p - 0.9) / 0.1);
+    maskCtx.globalAlpha = fade;
+    maskCtx.fillStyle = '#fff';
+    maskCtx.fillRect(0, 0, w, h);
+    maskCtx.globalAlpha = 1;
+  }
+
+  // ink ∩ mask on dedicated buffer
+  revealedCtx.setTransform(1, 0, 0, 1, 0, 0);
+  revealedCtx.clearRect(0, 0, w, h);
+  revealedCtx.globalCompositeOperation = 'source-over';
+  revealedCtx.drawImage(ink, 0, 0);
+  revealedCtx.globalCompositeOperation = 'destination-in';
+  revealedCtx.drawImage(mask, 0, 0);
+  revealedCtx.globalCompositeOperation = 'source-over';
+
+  // 1) hello tube under  2) revealed calligraphy  3) tip
+  strokeTube(drawn, scale);
+  ctx.drawImage(revealed, 0, 0);
+
+  if (p > 0.01 && p < 0.95) {
+    const tip = mainEl.getPointAtLength(Math.min(drawn, mainLen));
+    const tx = ox + tip.x * scale;
+    const ty = oy + tip.y * scale;
+    const g = ctx.createRadialGradient(tx, ty, 0, tx, ty, 22 * scale);
+    g.addColorStop(0, 'rgba(255,252,245,0.95)');
+    g.addColorStop(0.35, 'rgba(243,215,176,0.45)');
+    g.addColorStop(1, 'rgba(230,181,106,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(tx, ty, 22 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+const WRITE_MS = 3800;
+const HOLD_MS = 1600;
+const GAP_MS = 480;
+const CYCLE = WRITE_MS + HOLD_MS + GAP_MS;
+const FRAME_DT = 1000 / 120;
+
+let paused = false;
+let acc = 0;
+let last = performance.now();
+let t0 = last;
+
+function frame(now) {
+  const wall = Math.min(48, now - last);
+  last = now;
+  if (!paused) {
+    acc += wall;
+    let steps = 0;
+    while (acc >= FRAME_DT && steps < 3) { acc -= FRAME_DT; steps++; }
+    const elapsed = (now - t0) % CYCLE;
+    let progress = 0;
+    if (elapsed < WRITE_MS) progress = ease(elapsed / WRITE_MS);
+    else if (elapsed < WRITE_MS + HOLD_MS) progress = 1;
+    else progress = 0;
+    drawProgress(progress);
+  }
+  requestAnimationFrame(frame);
+}
+
+document.getElementById('replay').onclick = () => { t0 = performance.now(); paused = false; };
+document.getElementById('pause').onclick = () => {
+  paused = !paused;
+  if (!paused) last = performance.now();
+};
+
+measure();
+resize();
+window.addEventListener('resize', () => { resize(); });
+requestAnimationFrame((t) => { last = t; t0 = t; requestAnimationFrame(frame); });
+</script>
+</body>
+</html>
